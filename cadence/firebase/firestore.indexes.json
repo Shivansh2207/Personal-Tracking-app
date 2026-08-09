@@ -1,0 +1,5 @@
+{
+  "$comment": "DEVBEAST OS uses only single-field equality/range filters and sorts client-side, so Firestore's automatic single-field indexes cover every query the app makes. No composite indexes need to be deployed.",
+  "indexes": [],
+  "fieldOverrides": []
+}

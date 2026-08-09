@@ -1,0 +1,25 @@
+# Local credentials and environment files
+_secrets/
+**/_secrets/
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.expo/
+**/.expo/
+web-build/
+**/web-build/
+
+# Native/build/editor noise
+android/
+ios/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
