@@ -1,0 +1,237 @@
+rules_version = '2';
+
+// DayFlow security rules.
+//
+// Every record lives under `users/{uid}`, so ownership is structural: a request
+// can only ever reach documents whose path contains the caller's own uid. No
+// collection-group read path exists, so a crafted query cannot reach another
+// user's data either.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // `userId` is denormalised onto records for exports; when present it must
+    // agree with the path, so it can never be used to impersonate another user.
+    function userIdMatches(uid) {
+      return !('userId' in request.resource.data)
+        || request.resource.data.userId == uid;
+    }
+
+    function isDateKey(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isPercent(value) {
+      return value is number && value >= 0 && value <= 100;
+    }
+
+    // ---- user profile -----------------------------------------------------
+    match /users/{uid} {
+      allow get, list: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.email is string;
+
+      allow update: if isOwner(uid)
+        // The uid on the document can never be repointed.
+        && request.resource.data.uid == resource.data.uid
+        && (!('name' in request.resource.data) || request.resource.data.name.size() <= 120);
+
+      allow delete: if isOwner(uid);
+
+      // ---- categories -----------------------------------------------------
+      match /categories/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 60;
+      }
+
+      // ---- routines -------------------------------------------------------
+      match /routines/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 120
+          && request.resource.data.trackingType in
+               ['check', 'count', 'duration', 'time', 'session', 'numeric']
+          && request.resource.data.schedule is map
+          && isDateKey(request.resource.data.schedule.startDate);
+      }
+
+      match /routineLogs/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.routineId is string
+          && isDateKey(request.resource.data.dateKey)
+          && request.resource.data.status in
+               ['completed', 'partial', 'missed', 'skipped', 'rest']
+          && request.resource.data.actualValue is number
+          && request.resource.data.actualValue >= 0
+          // The log id is deterministic, which is what stops duplicate day rows.
+          && docId == request.resource.data.routineId + '_' + request.resource.data.dateKey;
+      }
+
+      // ---- tasks ----------------------------------------------------------
+      match /tasks/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 300
+          && request.resource.data.status in ['pending', 'completed', 'skipped']
+          && request.resource.data.priority in ['low', 'normal', 'high', 'urgent']
+          && (request.resource.data.dateKey == null
+              || isDateKey(request.resource.data.dateKey));
+      }
+
+      // ---- study ----------------------------------------------------------
+      match /courses/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 120;
+      }
+
+      match /subjects/{subjectId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 120;
+
+        match /chapters/{chapterId} {
+          allow read, delete: if isOwner(uid);
+          allow create, update: if isOwner(uid)
+            && userIdMatches(uid)
+            && request.resource.data.name is string
+            && request.resource.data.name.size() > 0
+            && request.resource.data.name.size() <= 200
+            && request.resource.data.status in
+                 ['not_started', 'learning', 'practice', 'revision', 'completed']
+            && isPercent(request.resource.data.progress);
+
+          match /topics/{topicId} {
+            allow read, delete: if isOwner(uid);
+            allow create, update: if isOwner(uid)
+              && userIdMatches(uid)
+              && request.resource.data.name is string
+              && request.resource.data.name.size() > 0
+              && request.resource.data.name.size() <= 200
+              && request.resource.data.status in
+                   ['not_started', 'learning', 'practice', 'revision', 'completed'];
+          }
+        }
+      }
+
+      match /studySessions/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(request.resource.data.dateKey)
+          && request.resource.data.actualMinutes is number
+          && request.resource.data.actualMinutes >= 0
+          && request.resource.data.actualMinutes <= 1440
+          && request.resource.data.source in ['timer', 'manual', 'timetable', 'revision'];
+      }
+
+      match /timetableSlots/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.subjectId is string
+          && request.resource.data.daysOfWeek is list
+          && request.resource.data.startTime is string
+          && request.resource.data.durationMinutes is number
+          && request.resource.data.durationMinutes > 0
+          && request.resource.data.durationMinutes <= 1440
+          && request.resource.data.chapterMode in ['fixed', 'next_incomplete'];
+      }
+
+      match /revisionItems/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && request.resource.data.subjectId is string
+          && request.resource.data.chapterId is string
+          && isDateKey(request.resource.data.dueDateKey)
+          && request.resource.data.status in ['due', 'completed', 'skipped'];
+      }
+
+      match /activityLogs/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(request.resource.data.dateKey);
+      }
+
+      // ---- aggregates -----------------------------------------------------
+      // Keyed by the local date / week they describe, so the id can never
+      // disagree with the contents.
+      match /dailySummaries/{dateKey} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(dateKey)
+          && request.resource.data.dateKey == dateKey
+          && isPercent(request.resource.data.routineConsistency)
+          && (request.resource.data.overallConsistency == null
+              || isPercent(request.resource.data.overallConsistency));
+      }
+
+      match /weeklySummaries/{weekId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(request.resource.data.weekStart)
+          && isDateKey(request.resource.data.weekEnd);
+      }
+
+      match /reflections/{dateKey} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(dateKey)
+          && request.resource.data.dateKey == dateKey;
+      }
+
+      match /notes/{docId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && userIdMatches(uid)
+          && isDateKey(request.resource.data.dateKey)
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 5000;
+      }
+
+      // Anything not explicitly matched above stays denied.
+      match /{unknown=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // No document outside `users/{uid}` is readable or writable by anyone.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
